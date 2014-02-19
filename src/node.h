@@ -86,18 +86,18 @@ NODE_EXTERN v8::Local<v8::Value> UVException(int errorno,
  */
 
 NODE_EXTERN v8::Handle<v8::Value> MakeCallback(
-    const v8::Handle<v8::Object> recv,
+    v8::Handle<v8::Object> recv,
     const char* method,
     int argc,
     v8::Handle<v8::Value>* argv);
 NODE_EXTERN v8::Handle<v8::Value> MakeCallback(
-    const v8::Handle<v8::Object> object,
-    const v8::Handle<v8::String> symbol,
+    v8::Handle<v8::Object> recv,
+    v8::Handle<v8::String> symbol,
     int argc,
     v8::Handle<v8::Value>* argv);
 NODE_EXTERN v8::Handle<v8::Value> MakeCallback(
-    const v8::Handle<v8::Object> object,
-    const v8::Handle<v8::Function> callback,
+    v8::Handle<v8::Object> recv,
+    v8::Handle<v8::Function> callback,
     int argc,
     v8::Handle<v8::Value>* argv);
 
@@ -190,7 +190,6 @@ enum encoding {ASCII, UTF8, BASE64, UCS2, BINARY, HEX, BUFFER};
 enum encoding ParseEncoding(v8::Handle<v8::Value> encoding_v,
                             enum encoding _default = BINARY);
 NODE_EXTERN void FatalException(const v8::TryCatch& try_catch);
-void DisplayExceptionLine(v8::Handle<v8::Message> message);
 
 NODE_EXTERN v8::Local<v8::Value> Encode(const void *buf, size_t len,
                                         enum encoding encoding = BINARY);

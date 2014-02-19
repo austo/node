@@ -67,6 +67,8 @@ class TLSCallbacks : public crypto::SSLWrap<TLSCallbacks>,
               uv_handle_type pending);
   int DoShutdown(ShutdownWrap* req_wrap, uv_shutdown_cb cb);
 
+  void NewSessionDoneCb();
+
  protected:
   static const int kClearOutChunkSize = 1024;
 
@@ -104,9 +106,15 @@ class TLSCallbacks : public crypto::SSLWrap<TLSCallbacks>,
   bool InvokeQueued(int status);
 
   inline void Cycle() {
-    ClearIn();
-    ClearOut();
-    EncOut();
+    // Prevent recursion
+    if (++cycle_depth_ > 1)
+      return;
+
+    for (; cycle_depth_ > 0; cycle_depth_--) {
+      ClearIn();
+      ClearOut();
+      EncOut();
+    }
   }
 
   v8::Local<v8::Value> GetSSLError(int status, int* err, const char** msg);
@@ -144,6 +152,7 @@ class TLSCallbacks : public crypto::SSLWrap<TLSCallbacks>,
   bool established_;
   bool shutdown_;
   const char* error_;
+  int cycle_depth_;
 
   // If true - delivered EOF to the js-land, either after `close_notify`, or
   // after the `UV_EOF` on socket.

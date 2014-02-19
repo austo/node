@@ -137,7 +137,8 @@ class SSLWrap {
       : env_(env),
         kind_(kind),
         next_sess_(NULL),
-        session_callbacks_(false) {
+        session_callbacks_(false),
+        new_session_wait_(false) {
     ssl_ = SSL_new(sc->ctx_);
     assert(ssl_ != NULL);
   }
@@ -162,6 +163,7 @@ class SSLWrap {
   inline void enable_session_callbacks() { session_callbacks_ = true; }
   inline bool is_server() const { return kind_ == kServer; }
   inline bool is_client() const { return kind_ == kClient; }
+  inline bool is_waiting_new_session() const { return new_session_wait_; }
 
  protected:
   static void InitNPN(SecureContext* sc, Base* base);
@@ -187,6 +189,8 @@ class SSLWrap {
   static void EndParser(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void Renegotiate(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void Shutdown(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void GetTLSTicket(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void NewSessionDone(const v8::FunctionCallbackInfo<v8::Value>& args);
 
 #ifdef SSL_set_max_send_fragment
   static void SetMaxSendFragment(
@@ -218,6 +222,7 @@ class SSLWrap {
   SSL_SESSION* next_sess_;
   SSL* ssl_;
   bool session_callbacks_;
+  bool new_session_wait_;
   ClientHelloParser hello_parser_;
 
 #ifdef OPENSSL_NPN_NEGOTIATED
@@ -242,6 +247,7 @@ class Connection : public SSLWrap<Connection>, public AsyncWrap {
   }
 
   static void Initialize(Environment* env, v8::Handle<v8::Object> target);
+  void NewSessionDoneCb();
 
 #ifdef OPENSSL_NPN_NEGOTIATED
   v8::Persistent<v8::Object> npnProtos_;
@@ -296,7 +302,7 @@ class Connection : public SSLWrap<Connection>, public AsyncWrap {
              SecureContext* sc,
              SSLWrap<Connection>::Kind kind)
       : SSLWrap<Connection>(env, sc, kind),
-        AsyncWrap(env, wrap),
+        AsyncWrap(env, wrap, AsyncWrap::PROVIDER_CRYPTO),
         bio_read_(NULL),
         bio_write_(NULL),
         hello_offset_(0) {
@@ -535,8 +541,8 @@ class DiffieHellman : public BaseObject {
 
   static void Initialize(Environment* env, v8::Handle<v8::Object> target);
 
-  bool Init(int primeLength);
-  bool Init(const char* p, int p_len);
+  bool Init(int primeLength, int g);
+  bool Init(const char* p, int p_len, int g);
   bool Init(const char* p, int p_len, const char* g, int g_len);
 
  protected:
@@ -551,10 +557,14 @@ class DiffieHellman : public BaseObject {
   static void ComputeSecret(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void SetPublicKey(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void SetPrivateKey(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void VerifyErrorGetter(
+      v8::Local<v8::String> property,
+      const v8::PropertyCallbackInfo<v8::Value>& args);
 
   DiffieHellman(Environment* env, v8::Local<v8::Object> wrap)
       : BaseObject(env, wrap),
         initialised_(false),
+        verifyError_(0),
         dh(NULL) {
     MakeWeak<DiffieHellman>(this);
   }
@@ -563,6 +573,7 @@ class DiffieHellman : public BaseObject {
   bool VerifyContext();
 
   bool initialised_;
+  int verifyError_;
   DH* dh;
 };
 
@@ -582,7 +593,7 @@ class Certificate : public AsyncWrap {
   static void ExportChallenge(const v8::FunctionCallbackInfo<v8::Value>& args);
 
   Certificate(Environment* env, v8::Local<v8::Object> wrap)
-      : AsyncWrap(env, wrap) {
+      : AsyncWrap(env, wrap, AsyncWrap::PROVIDER_CRYPTO) {
     MakeWeak<Certificate>(this);
   }
 };

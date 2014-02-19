@@ -88,6 +88,8 @@ using v8::Local;
 using v8::Null;
 using v8::Object;
 using v8::Persistent;
+using v8::PropertyAttribute;
+using v8::PropertyCallbackInfo;
 using v8::String;
 using v8::ThrowException;
 using v8::V8;
@@ -856,6 +858,8 @@ void SSLWrap<Base>::AddMethods(Handle<FunctionTemplate> t) {
   NODE_SET_PROTOTYPE_METHOD(t, "endParser", EndParser);
   NODE_SET_PROTOTYPE_METHOD(t, "renegotiate", Renegotiate);
   NODE_SET_PROTOTYPE_METHOD(t, "shutdown", Shutdown);
+  NODE_SET_PROTOTYPE_METHOD(t, "getTLSTicket", GetTLSTicket);
+  NODE_SET_PROTOTYPE_METHOD(t, "newSessionDone", NewSessionDone);
 
 #ifdef SSL_set_max_send_fragment
   NODE_SET_PROTOTYPE_METHOD(t, "setMaxSendFragment", SetMaxSendFragment);
@@ -928,6 +932,7 @@ int SSLWrap<Base>::NewSessionCallback(SSL* s, SSL_SESSION* sess) {
                                       reinterpret_cast<char*>(sess->session_id),
                                       sess->session_id_length);
   Local<Value> argv[] = { session, buff };
+  w->new_session_wait_ = true;
   w->MakeCallback(env->onnewsession_string(), ARRAY_SIZE(argv), argv);
 
   return 0;
@@ -1129,7 +1134,7 @@ void SSLWrap<Base>::GetSession(const FunctionCallbackInfo<Value>& args) {
   unsigned char* sbuf = new unsigned char[slen];
   unsigned char* p = sbuf;
   i2d_SSL_SESSION(sess, &p);
-  args.GetReturnValue().Set(Encode(sbuf, slen, BINARY));
+  args.GetReturnValue().Set(Encode(sbuf, slen, BUFFER));
   delete[] sbuf;
 }
 
@@ -1244,6 +1249,35 @@ void SSLWrap<Base>::Shutdown(const FunctionCallbackInfo<Value>& args) {
 
   int rv = SSL_shutdown(w->ssl_);
   args.GetReturnValue().Set(rv);
+}
+
+
+template <class Base>
+void SSLWrap<Base>::GetTLSTicket(const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(args.GetIsolate());
+
+  Base* w = Unwrap<Base>(args.This());
+  Environment* env = w->ssl_env();
+
+  SSL_SESSION* sess = SSL_get_session(w->ssl_);
+  if (sess == NULL || sess->tlsext_tick == NULL)
+    return;
+
+  Local<Object> buf = Buffer::New(env,
+                                  reinterpret_cast<char*>(sess->tlsext_tick),
+                                  sess->tlsext_ticklen);
+
+  args.GetReturnValue().Set(buf);
+}
+
+
+template <class Base>
+void SSLWrap<Base>::NewSessionDone(const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(args.GetIsolate());
+
+  Base* w = Unwrap<Base>(args.This());
+  w->new_session_wait_ = false;
+  w->NewSessionDoneCb();
 }
 
 
@@ -1631,6 +1665,13 @@ void Connection::SetShutdownFlags() {
 }
 
 
+void Connection::NewSessionDoneCb() {
+  HandleScope scope(env()->isolate());
+
+  MakeCallback(env()->onnewsessiondone_string(), 0, NULL);
+}
+
+
 void Connection::Initialize(Environment* env, Handle<Object> target) {
   Local<FunctionTemplate> t = FunctionTemplate::New(Connection::New);
   t->InstanceTemplate()->SetInternalFieldCount(1);
@@ -1862,9 +1903,9 @@ void Connection::EncIn(const FunctionCallbackInfo<Value>& args) {
 
   size_t off = args[1]->Int32Value();
   size_t len = args[2]->Int32Value();
-  if (off + len > buffer_length) {
+
+  if (!Buffer::IsWithinBounds(off, len, buffer_length))
     return ThrowError("off + len > buffer.length");
-  }
 
   int bytes_written;
   char* data = buffer_data + off;
@@ -1912,9 +1953,9 @@ void Connection::ClearOut(const FunctionCallbackInfo<Value>& args) {
 
   size_t off = args[1]->Int32Value();
   size_t len = args[2]->Int32Value();
-  if (off + len > buffer_length) {
+
+  if (!Buffer::IsWithinBounds(off, len, buffer_length))
     return ThrowError("off + len > buffer.length");
-  }
 
   if (!SSL_is_init_finished(conn->ssl_)) {
     int rv;
@@ -1983,9 +2024,9 @@ void Connection::EncOut(const FunctionCallbackInfo<Value>& args) {
 
   size_t off = args[1]->Int32Value();
   size_t len = args[2]->Int32Value();
-  if (off + len > buffer_length) {
+
+  if (!Buffer::IsWithinBounds(off, len, buffer_length))
     return ThrowError("off + len > buffer.length");
-  }
 
   int bytes_read = BIO_read(conn->bio_write_, buffer_data + off, len);
 
@@ -2014,9 +2055,9 @@ void Connection::ClearIn(const FunctionCallbackInfo<Value>& args) {
 
   size_t off = args[1]->Int32Value();
   size_t len = args[2]->Int32Value();
-  if (off + len > buffer_length) {
+
+  if (!Buffer::IsWithinBounds(off, len, buffer_length))
     return ThrowError("off + len > buffer.length");
-  }
 
   if (!SSL_is_init_finished(conn->ssl_)) {
     int rv;
@@ -3119,6 +3160,9 @@ void Verify::VerifyFinal(const FunctionCallbackInfo<Value>& args) {
 void DiffieHellman::Initialize(Environment* env, Handle<Object> target) {
   Local<FunctionTemplate> t = FunctionTemplate::New(New);
 
+  static enum PropertyAttribute attributes =
+      static_cast<PropertyAttribute>(v8::ReadOnly | v8::DontDelete);
+
   t->InstanceTemplate()->SetInternalFieldCount(1);
 
   NODE_SET_PROTOTYPE_METHOD(t, "generateKeys", GenerateKeys);
@@ -3129,6 +3173,13 @@ void DiffieHellman::Initialize(Environment* env, Handle<Object> target) {
   NODE_SET_PROTOTYPE_METHOD(t, "getPrivateKey", GetPrivateKey);
   NODE_SET_PROTOTYPE_METHOD(t, "setPublicKey", SetPublicKey);
   NODE_SET_PROTOTYPE_METHOD(t, "setPrivateKey", SetPrivateKey);
+
+  t->InstanceTemplate()->SetAccessor(env->verify_error_string(),
+                                     DiffieHellman::VerifyErrorGetter,
+                                     NULL,
+                                     Handle<Value>(),
+                                     v8::DEFAULT,
+                                     attributes);
 
   target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "DiffieHellman"),
               t->GetFunction());
@@ -3143,14 +3194,21 @@ void DiffieHellman::Initialize(Environment* env, Handle<Object> target) {
   NODE_SET_PROTOTYPE_METHOD(t2, "getPublicKey", GetPublicKey);
   NODE_SET_PROTOTYPE_METHOD(t2, "getPrivateKey", GetPrivateKey);
 
+  t2->InstanceTemplate()->SetAccessor(env->verify_error_string(),
+                                      DiffieHellman::VerifyErrorGetter,
+                                      NULL,
+                                      Handle<Value>(),
+                                      v8::DEFAULT,
+                                      attributes);
+
   target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "DiffieHellmanGroup"),
               t2->GetFunction());
 }
 
 
-bool DiffieHellman::Init(int primeLength) {
+bool DiffieHellman::Init(int primeLength, int g) {
   dh = DH_new();
-  DH_generate_parameters_ex(dh, primeLength, DH_GENERATOR_2, 0);
+  DH_generate_parameters_ex(dh, primeLength, g, 0);
   bool result = VerifyContext();
   if (!result)
     return false;
@@ -3159,11 +3217,11 @@ bool DiffieHellman::Init(int primeLength) {
 }
 
 
-bool DiffieHellman::Init(const char* p, int p_len) {
+bool DiffieHellman::Init(const char* p, int p_len, int g) {
   dh = DH_new();
   dh->p = BN_bin2bn(reinterpret_cast<const unsigned char*>(p), p_len, 0);
   dh->g = BN_new();
-  if (!BN_set_word(dh->g, 2))
+  if (!BN_set_word(dh->g, g))
     return false;
   bool result = VerifyContext();
   if (!result)
@@ -3177,6 +3235,9 @@ bool DiffieHellman::Init(const char* p, int p_len, const char* g, int g_len) {
   dh = DH_new();
   dh->p = BN_bin2bn(reinterpret_cast<const unsigned char*>(p), p_len, 0);
   dh->g = BN_bin2bn(reinterpret_cast<const unsigned char*>(g), g_len, 0);
+  bool result = VerifyContext();
+  if (!result)
+    return false;
   initialised_ = true;
   return true;
 }
@@ -3193,6 +3254,8 @@ void DiffieHellman::DiffieHellmanGroup(
     return ThrowError("No group name given");
   }
 
+  bool initialized = false;
+
   const String::Utf8Value group_name(args[0]);
   for (unsigned int i = 0; i < ARRAY_SIZE(modp_groups); ++i) {
     const modp_group* it = modp_groups + i;
@@ -3200,10 +3263,12 @@ void DiffieHellman::DiffieHellmanGroup(
     if (strcasecmp(*group_name, it->name) != 0)
       continue;
 
-    diffieHellman->Init(it->prime,
-                        it->prime_size,
-                        it->gen,
-                        it->gen_size);
+    initialized = diffieHellman->Init(it->prime,
+                                      it->prime_size,
+                                      it->gen,
+                                      it->gen_size);
+    if (!initialized)
+      ThrowError("Initialization failed");
     return;
   }
 
@@ -3219,12 +3284,23 @@ void DiffieHellman::New(const FunctionCallbackInfo<Value>& args) {
       new DiffieHellman(env, args.This());
   bool initialized = false;
 
-  if (args.Length() > 0) {
+  if (args.Length() == 2) {
     if (args[0]->IsInt32()) {
-      initialized = diffieHellman->Init(args[0]->Int32Value());
+      if (args[1]->IsInt32()) {
+        initialized = diffieHellman->Init(args[0]->Int32Value(),
+                                          args[1]->Int32Value());
+      }
     } else {
-      initialized = diffieHellman->Init(Buffer::Data(args[0]),
-                                        Buffer::Length(args[0]));
+      if (args[1]->IsInt32()) {
+        initialized = diffieHellman->Init(Buffer::Data(args[0]),
+                                          Buffer::Length(args[0]),
+                                          args[1]->Int32Value());
+      } else {
+        initialized = diffieHellman->Init(Buffer::Data(args[0]),
+                                          Buffer::Length(args[0]),
+                                          Buffer::Data(args[1]),
+                                          Buffer::Length(args[1]));
+      }
     }
   }
 
@@ -3451,18 +3527,24 @@ void DiffieHellman::SetPrivateKey(const FunctionCallbackInfo<Value>& args) {
 }
 
 
+void DiffieHellman::VerifyErrorGetter(Local<String> property,
+                                      const PropertyCallbackInfo<Value>& args) {
+  HandleScope scope(args.GetIsolate());
+
+  DiffieHellman* diffieHellman = Unwrap<DiffieHellman>(args.This());
+
+  if (!diffieHellman->initialised_)
+    return ThrowError("Not initialized");
+
+  args.GetReturnValue().Set(diffieHellman->verifyError_);
+}
+
+
 bool DiffieHellman::VerifyContext() {
   int codes;
   if (!DH_check(dh, &codes))
     return false;
-  if (codes & DH_CHECK_P_NOT_SAFE_PRIME)
-    return false;
-  if (codes & DH_CHECK_P_NOT_PRIME)
-    return false;
-  if (codes & DH_UNABLE_TO_CHECK_GENERATOR)
-    return false;
-  if (codes & DH_NOT_SUITABLE_GENERATOR)
-    return false;
+  verifyError_ = codes;
   return true;
 }
 
@@ -3478,7 +3560,7 @@ class PBKDF2Request : public AsyncWrap {
                 char* salt,
                 ssize_t iter,
                 ssize_t keylen)
-      : AsyncWrap(env, object),
+      : AsyncWrap(env, object, AsyncWrap::PROVIDER_CRYPTO),
         digest_(digest),
         error_(0),
         passlen_(passlen),
@@ -3740,7 +3822,7 @@ void PBKDF2(const FunctionCallbackInfo<Value>& args) {
 class RandomBytesRequest : public AsyncWrap {
  public:
   RandomBytesRequest(Environment* env, Local<Object> object, size_t size)
-      : AsyncWrap(env, object),
+      : AsyncWrap(env, object, AsyncWrap::PROVIDER_CRYPTO),
         error_(0),
         size_(size),
         data_(static_cast<char*>(malloc(size))) {

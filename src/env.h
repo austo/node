@@ -27,6 +27,7 @@
 #include "util.h"
 #include "uv.h"
 #include "v8.h"
+#include "queue.h"
 
 #include <stdint.h>
 
@@ -52,9 +53,10 @@ namespace node {
 // for the sake of convenience.
 #define PER_ISOLATE_STRING_PROPERTIES(V)                                      \
   V(address_string, "address")                                                \
-  V(atime_string, "atime")                                                    \
-  V(async, "async")                                                           \
+  V(args_string, "args")                                                      \
   V(async_queue_string, "_asyncQueue")                                        \
+  V(async, "async")                                                           \
+  V(atime_string, "atime")                                                    \
   V(birthtime_string, "birthtime")                                            \
   V(blksize_string, "blksize")                                                \
   V(blocks_string, "blocks")                                                  \
@@ -65,10 +67,13 @@ namespace node {
   V(close_string, "close")                                                    \
   V(code_string, "code")                                                      \
   V(ctime_string, "ctime")                                                    \
+  V(cwd_string, "cwd")                                                        \
+  V(detached_string, "detached")                                              \
   V(dev_string, "dev")                                                        \
   V(disposed_string, "_disposed")                                             \
   V(domain_string, "domain")                                                  \
   V(enter_string, "enter")                                                    \
+  V(env_pairs_string, "envPairs")                                             \
   V(errno_string, "errno")                                                    \
   V(error_string, "error")                                                    \
   V(exit_string, "exit")                                                      \
@@ -77,17 +82,28 @@ namespace node {
   V(ext_key_usage_string, "ext_key_usage")                                    \
   V(family_string, "family")                                                  \
   V(fatal_exception_string, "_fatalException")                                \
+  V(fd_string, "fd")                                                          \
+  V(file_string, "file")                                                      \
   V(fingerprint_string, "fingerprint")                                        \
+  V(flags_string, "flags")                                                    \
   V(gid_string, "gid")                                                        \
   V(handle_string, "handle")                                                  \
   V(headers_string, "headers")                                                \
+  V(heap_size_limit_string, "heap_size_limit")                                \
   V(heap_total_string, "heapTotal")                                           \
   V(heap_used_string, "heapUsed")                                             \
+  V(ignore_string, "ignore")                                                  \
   V(immediate_callback_string, "_immediateCallback")                          \
+  V(inherit_string, "inherit")                                                \
   V(ino_string, "ino")                                                        \
+  V(input_string, "input")                                                    \
   V(ipv4_string, "IPv4")                                                      \
   V(ipv6_string, "IPv6")                                                      \
   V(issuer_string, "issuer")                                                  \
+  V(kill_signal_string, "killSignal")                                         \
+  V(mark_sweep_compact_string, "mark-sweep-compact")                          \
+  V(max_buffer_string, "maxBuffer")                                           \
+  V(message_string, "message")                                                \
   V(method_string, "method")                                                  \
   V(mode_string, "mode")                                                      \
   V(modulus_string, "modulus")                                                \
@@ -105,36 +121,58 @@ namespace node {
   V(onhandshakestart_string, "onhandshakestart")                              \
   V(onmessage_string, "onmessage")                                            \
   V(onnewsession_string, "onnewsession")                                      \
+  V(onnewsessiondone_string, "onnewsessiondone")                              \
   V(onread_string, "onread")                                                  \
   V(onselect_string, "onselect")                                              \
   V(onsignal_string, "onsignal")                                              \
   V(onstop_string, "onstop")                                                  \
+  V(output_string, "output")                                                  \
   V(path_string, "path")                                                      \
+  V(pid_string, "pid")                                                        \
+  V(pipe_string, "pipe")                                                      \
   V(port_string, "port")                                                      \
+  V(processed_string, "processed")                                            \
   V(rdev_string, "rdev")                                                      \
+  V(readable_string, "readable")                                              \
   V(rename_string, "rename")                                                  \
   V(rss_string, "rss")                                                        \
+  V(scavenge_string, "scavenge")                                              \
   V(serial_number_string, "serialNumber")                                     \
   V(servername_string, "servername")                                          \
   V(session_id_string, "sessionId")                                           \
   V(should_keep_alive_string, "shouldKeepAlive")                              \
+  V(signal_string, "signal")                                                  \
   V(size_string, "size")                                                      \
   V(smalloc_p_string, "_smalloc_p")                                           \
+  V(sni_context_err_string, "Invalid SNI context")                            \
   V(sni_context_string, "sni_context")                                        \
+  V(stack_string, "stack")                                                    \
   V(status_code_string, "statusCode")                                         \
   V(status_message_string, "statusMessage")                                   \
+  V(status_string, "status")                                                  \
+  V(stdio_string, "stdio")                                                    \
   V(subject_string, "subject")                                                \
   V(subjectaltname_string, "subjectaltname")                                  \
   V(syscall_string, "syscall")                                                \
+  V(timeout_string, "timeout")                                                \
+  V(timestamp_string, "timestamp")                                            \
   V(tls_ticket_string, "tlsTicket")                                           \
+  V(total_heap_size_executable_string, "total_heap_size_executable")          \
+  V(total_heap_size_string, "total_heap_size")                                \
+  V(total_physical_size_string, "total_physical_size")                        \
+  V(type_string, "type")                                                      \
   V(uid_string, "uid")                                                        \
   V(upgrade_string, "upgrade")                                                \
   V(url_string, "url")                                                        \
+  V(used_heap_size_string, "used_heap_size")                                  \
   V(valid_from_string, "valid_from")                                          \
   V(valid_to_string, "valid_to")                                              \
+  V(verify_error_string, "verifyError")                                       \
   V(version_major_string, "versionMajor")                                     \
   V(version_minor_string, "versionMinor")                                     \
   V(version_string, "version")                                                \
+  V(windows_verbatim_arguments_string, "windowsVerbatimArguments")            \
+  V(writable_string, "writable")                                              \
   V(write_queue_size_string, "writeQueueSize")                                \
 
 #define ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES(V)                           \
@@ -145,6 +183,7 @@ namespace node {
   V(buffer_constructor_function, v8::Function)                                \
   V(context, v8::Context)                                                     \
   V(domain_array, v8::Array)                                                  \
+  V(gc_info_callback_function, v8::Function)                                  \
   V(module_load_list_array, v8::Array)                                        \
   V(pipe_constructor_template, v8::FunctionTemplate)                          \
   V(process_object, v8::Object)                                               \
@@ -178,6 +217,7 @@ class Environment {
     inline uint32_t* fields();
     inline int fields_count() const;
     inline bool has_listener() const;
+    inline uint32_t watched_providers() const;
 
    private:
     friend class Environment;  // So we can call the constructor.
@@ -185,6 +225,7 @@ class Environment {
 
     enum Fields {
       kHasListener,
+      kWatchedProviders,
       kFieldsCount
     };
 
@@ -251,10 +292,15 @@ class Environment {
   static inline Environment* New(v8::Local<v8::Context> context);
   inline void Dispose();
 
+  // Defined in src/node_profiler.cc.
+  void StartGarbageCollectionTracking(v8::Local<v8::Function> callback);
+  void StopGarbageCollectionTracking();
+
   inline v8::Isolate* isolate() const;
   inline uv_loop_t* event_loop() const;
   inline bool has_async_listener() const;
   inline bool in_domain() const;
+  inline uint32_t watched_providers() const;
 
   static inline Environment* from_immediate_check_handle(uv_check_t* handle);
   inline uv_check_t* immediate_check_handle();
@@ -282,6 +328,9 @@ class Environment {
   inline bool using_domains() const;
   inline void set_using_domains(bool value);
 
+  inline bool printed_error() const;
+  inline void set_printed_error(bool value);
+
   // Strings are shared across shared contexts. The getters simply proxy to
   // the per-isolate primitive.
 #define V(PropertyName, StringValue)                                          \
@@ -296,10 +345,13 @@ class Environment {
 #undef V
 
  private:
+  class GCInfo;
   class IsolateData;
   inline explicit Environment(v8::Local<v8::Context> context);
   inline ~Environment();
   inline IsolateData* isolate_data() const;
+  void AfterGarbageCollectionCallback(const GCInfo* before,
+                                      const GCInfo* after);
 
   enum ContextEmbedderDataIndex {
     kContextEmbedderDataIndex = NODE_CONTEXT_EMBEDDER_DATA_INDEX
@@ -319,11 +371,33 @@ class Environment {
   ares_task_list cares_task_list_;
   bool using_smalloc_alloc_cb_;
   bool using_domains_;
+  QUEUE gc_tracker_queue_;
+  bool printed_error_;
 
 #define V(PropertyName, TypeName)                                             \
   v8::Persistent<TypeName> PropertyName ## _;
   ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES(V)
 #undef V
+
+  class GCInfo {
+   public:
+    inline GCInfo();
+    inline GCInfo(v8::Isolate* isolate,
+                  v8::GCType type,
+                  v8::GCCallbackFlags flags,
+                  uint64_t timestamp);
+    inline v8::GCType type() const;
+    inline v8::GCCallbackFlags flags() const;
+    // TODO(bnoordhuis) Const-ify once https://codereview.chromium.org/63693005
+    // lands and makes it way into a stable release.
+    inline v8::HeapStatistics* stats() const;
+    inline uint64_t timestamp() const;
+   private:
+    v8::GCType type_;
+    v8::GCCallbackFlags flags_;
+    v8::HeapStatistics stats_;
+    uint64_t timestamp_;
+  };
 
   // Per-thread, reference-counted singleton.
   class IsolateData {
@@ -332,14 +406,29 @@ class Environment {
     inline void Put();
     inline uv_loop_t* event_loop() const;
 
+    // Defined in src/node_profiler.cc.
+    void StartGarbageCollectionTracking(Environment* env);
+    void StopGarbageCollectionTracking(Environment* env);
+
 #define V(PropertyName, StringValue)                                          \
     inline v8::Local<v8::String> PropertyName() const;
     PER_ISOLATE_STRING_PROPERTIES(V)
 #undef V
 
    private:
+    inline static IsolateData* Get(v8::Isolate* isolate);
     inline explicit IsolateData(v8::Isolate* isolate);
     inline v8::Isolate* isolate() const;
+
+    // Defined in src/node_profiler.cc.
+    static void BeforeGarbageCollection(v8::Isolate* isolate,
+                                        v8::GCType type,
+                                        v8::GCCallbackFlags flags);
+    static void AfterGarbageCollection(v8::Isolate* isolate,
+                                       v8::GCType type,
+                                       v8::GCCallbackFlags flags);
+    void BeforeGarbageCollection(v8::GCType type, v8::GCCallbackFlags flags);
+    void AfterGarbageCollection(v8::GCType type, v8::GCCallbackFlags flags);
 
     uv_loop_t* const event_loop_;
     v8::Isolate* const isolate_;
@@ -350,6 +439,9 @@ class Environment {
 #undef V
 
     unsigned int ref_count_;
+    QUEUE gc_tracker_queue_;
+    GCInfo gc_info_before_;
+    GCInfo gc_info_after_;
 
     DISALLOW_COPY_AND_ASSIGN(IsolateData);
   };

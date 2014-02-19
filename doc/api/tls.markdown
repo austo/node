@@ -205,6 +205,12 @@ automatically set as a listener for the [secureConnection][] event.  The
     session identifiers and TLS session tickets created by the server are
     timed out. See [SSL_CTX_set_timeout] for more details.
 
+  - `ticketKeys`: A 48-byte `Buffer` instance consisting of 16-byte prefix,
+    16-byte hmac key, 16-byte AES key. You could use it to accept tls session
+    tickets on multiple instances of tls server.
+
+    NOTE: Automatically shared between `cluster` module workers.
+
   - `sessionIdContext`: A string containing a opaque identifier for session
     resumption. If `requestCert` is `true`, the default is MD5 hash value
     generated from command-line. Otherwise, the default is not provided.
@@ -314,6 +320,8 @@ Creates a new client connection to the given `port` and `host` (old API) or
     SSL version 3. The possible values depend on your installation of
     OpenSSL and are defined in the constant [SSL_METHODS][].
 
+  - `session`: A `Buffer` instance, containing TLS session.
+
 The `callback` parameter will be added as a listener for the
 ['secureConnect'][] event.
 
@@ -398,6 +406,8 @@ Construct a new TLSSocket object from existing TCP socket.
 
   - `SNICallback`: Optional, see [tls.createServer][]
 
+  - `session`: Optional, a `Buffer` instance, containing TLS session
+
 ## tls.createSecurePair([credentials], [isServer], [requestCert], [rejectUnauthorized])
 
     Stability: 0 - Deprecated. Use tls.TLSSocket instead.
@@ -474,10 +484,11 @@ established - it will be forwarded here.
 
 ### Event: 'newSession'
 
-`function (sessionId, sessionData) { }`
+`function (sessionId, sessionData, callback) { }`
 
 Emitted on creation of TLS session. May be used to store sessions in external
-storage.
+storage. `callback` must be invoked eventually, otherwise no data will be
+sent or received from secure connection.
 
 NOTE: adding this event listener will have an effect only on connections
 established after addition of event listener.
@@ -645,6 +656,18 @@ and its integrity is verified; large fragments can span multiple roundtrips,
 and their processing can be delayed due to packet loss or reordering. However,
 smaller fragments add extra TLS framing bytes and CPU overhead, which may
 decrease overall server throughput.
+
+### tlsSocket.getSession()
+
+Return ASN.1 encoded TLS session or `undefined` if none was negotiated. Could
+be used to speed up handshake establishment when reconnecting to the server.
+
+### tlsSocket.getTLSTicket()
+
+NOTE: Works only with client TLS sockets. Useful only for debugging, for
+session reuse provide `session` option to `tls.connect`.
+
+Return TLS session ticket or `undefined` if none was negotiated.
 
 ### tlsSocket.address()
 

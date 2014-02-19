@@ -940,7 +940,7 @@ void SetupNextTick(const FunctionCallbackInfo<Value>& args) {
 
 
 Handle<Value> MakeDomainCallback(Environment* env,
-                                 Handle<Object> object,
+                                 Handle<Value> recv,
                                  const Handle<Function> callback,
                                  int argc,
                                  Handle<Value> argv[]) {
@@ -948,42 +948,51 @@ Handle<Value> MakeDomainCallback(Environment* env,
   assert(env->context() == env->isolate()->GetCurrentContext());
 
   Local<Object> process = env->process_object();
-  Local<Value> domain_v = object->Get(env->domain_string());
-  Local<Object> domain;
+  Local<Object> object, domain;
+  Local<Value> domain_v;
 
   TryCatch try_catch;
   try_catch.SetVerbose(true);
 
-  // TODO(trevnorris): This is sucky for performance. Fix it.
-  bool has_async_queue = object->Has(env->async_queue_string());
-  if (has_async_queue) {
-    Local<Value> argv[] = { object };
-    env->async_listener_load_function()->Call(process, ARRAY_SIZE(argv), argv);
+  bool has_async_queue = false;
 
-    if (try_catch.HasCaught())
-      return Undefined(node_isolate);
-  }
+  if (recv->IsObject()) {
+    object = recv.As<Object>();
+    // TODO(trevnorris): This is sucky for performance. Fix it.
+    has_async_queue = object->Has(env->async_queue_string());
+    if (has_async_queue) {
+      env->async_listener_load_function()->Call(process, 1, &recv);
 
-  bool has_domain = domain_v->IsObject();
-  if (has_domain) {
-    domain = domain_v.As<Object>();
-
-    if (domain->Get(env->disposed_string())->IsTrue()) {
-      // domain has been disposed of.
-      return Undefined(node_isolate);
-    }
-
-    Local<Function> enter =
-        domain->Get(env->enter_string()).As<Function>();
-    assert(enter->IsFunction());
-    enter->Call(domain, 0, NULL);
-
-    if (try_catch.HasCaught()) {
-      return Undefined(node_isolate);
+      if (try_catch.HasCaught())
+        return Undefined(node_isolate);
     }
   }
 
-  Local<Value> ret = callback->Call(object, argc, argv);
+  bool has_domain = false;
+
+  if (!object.IsEmpty()) {
+    domain_v = object->Get(env->domain_string());
+    has_domain = domain_v->IsObject();
+    if (has_domain) {
+      domain = domain_v.As<Object>();
+
+      if (domain->Get(env->disposed_string())->IsTrue()) {
+        // domain has been disposed of.
+        return Undefined(node_isolate);
+      }
+
+      Local<Function> enter =
+          domain->Get(env->enter_string()).As<Function>();
+      assert(enter->IsFunction());
+      enter->Call(domain, 0, NULL);
+
+      if (try_catch.HasCaught()) {
+        return Undefined(node_isolate);
+      }
+    }
+  }
+
+  Local<Value> ret = callback->Call(recv, argc, argv);
 
   if (try_catch.HasCaught()) {
     return Undefined(node_isolate);
@@ -1001,8 +1010,7 @@ Handle<Value> MakeDomainCallback(Environment* env,
   }
 
   if (has_async_queue) {
-    Local<Value> val = object.As<Value>();
-    env->async_listener_unload_function()->Call(process, 1, &val);
+    env->async_listener_unload_function()->Call(process, 1, &recv);
 
     if (try_catch.HasCaught())
       return Undefined(node_isolate);
@@ -1040,12 +1048,12 @@ Handle<Value> MakeDomainCallback(Environment* env,
 
 
 Handle<Value> MakeCallback(Environment* env,
-                           Handle<Object> object,
+                           Handle<Value> recv,
                            const Handle<Function> callback,
                            int argc,
                            Handle<Value> argv[]) {
   if (env->using_domains())
-    return MakeDomainCallback(env, object, callback, argc, argv);
+    return MakeDomainCallback(env, recv, callback, argc, argv);
 
   // If you hit this assertion, you forgot to enter the v8::Context first.
   assert(env->context() == env->isolate()->GetCurrentContext());
@@ -1056,24 +1064,22 @@ Handle<Value> MakeCallback(Environment* env,
   try_catch.SetVerbose(true);
 
   // TODO(trevnorris): This is sucky for performance. Fix it.
-  bool has_async_queue = object->Has(env->async_queue_string());
+  bool has_async_queue =
+      recv->IsObject() && recv.As<Object>()->Has(env->async_queue_string());
   if (has_async_queue) {
-    Local<Value> argv[] = { object };
-    env->async_listener_load_function()->Call(process, ARRAY_SIZE(argv), argv);
-
+    env->async_listener_load_function()->Call(process, 1, &recv);
     if (try_catch.HasCaught())
       return Undefined(node_isolate);
   }
 
-  Local<Value> ret = callback->Call(object, argc, argv);
+  Local<Value> ret = callback->Call(recv, argc, argv);
 
   if (try_catch.HasCaught()) {
     return Undefined(node_isolate);
   }
 
   if (has_async_queue) {
-    Local<Value> val = object.As<Value>();
-    env->async_listener_unload_function()->Call(process, 1, &val);
+    env->async_listener_unload_function()->Call(process, 1, &recv);
 
     if (try_catch.HasCaught())
       return Undefined(node_isolate);
@@ -1108,84 +1114,85 @@ Handle<Value> MakeCallback(Environment* env,
 
 // Internal only.
 Handle<Value> MakeCallback(Environment* env,
-                           const Handle<Object> object,
+                           Handle<Object> recv,
                            uint32_t index,
                            int argc,
                            Handle<Value> argv[]) {
-  Local<Function> callback = object->Get(index).As<Function>();
+  Local<Function> callback = recv->Get(index).As<Function>();
   assert(callback->IsFunction());
 
-  return MakeCallback(env, object, callback, argc, argv);
+  return MakeCallback(env, recv.As<Value>(), callback, argc, argv);
 }
 
 
 Handle<Value> MakeCallback(Environment* env,
-                           const Handle<Object> object,
-                           const Handle<String> symbol,
+                           Handle<Object> recv,
+                           Handle<String> symbol,
                            int argc,
                            Handle<Value> argv[]) {
-  Local<Function> callback = object->Get(symbol).As<Function>();
+  Local<Function> callback = recv->Get(symbol).As<Function>();
   assert(callback->IsFunction());
-  return MakeCallback(env, object, callback, argc, argv);
+  return MakeCallback(env, recv.As<Value>(), callback, argc, argv);
 }
 
 
 Handle<Value> MakeCallback(Environment* env,
-                           const Handle<Object> object,
+                           Handle<Object> recv,
                            const char* method,
                            int argc,
                            Handle<Value> argv[]) {
   Local<String> method_string = OneByteString(node_isolate, method);
-  return MakeCallback(env, object, method_string, argc, argv);
+  return MakeCallback(env, recv, method_string, argc, argv);
 }
 
 
-Handle<Value> MakeCallback(const Handle<Object> object,
+Handle<Value> MakeCallback(Handle<Object> recv,
                            const char* method,
                            int argc,
                            Handle<Value> argv[]) {
-  Local<Context> context = object->CreationContext();
+  HandleScope handle_scope(node_isolate);  // FIXME(bnoordhuis) Isolate-ify.
+  Local<Context> context = recv->CreationContext();
   Environment* env = Environment::GetCurrent(context);
   Context::Scope context_scope(context);
-  HandleScope handle_scope(env->isolate());
-  return handle_scope.Close(MakeCallback(env, object, method, argc, argv));
+  return handle_scope.Close(MakeCallback(env, recv, method, argc, argv));
 }
 
 
-Handle<Value> MakeCallback(const Handle<Object> object,
-                           const Handle<String> symbol,
+Handle<Value> MakeCallback(Handle<Object> recv,
+                           Handle<String> symbol,
                            int argc,
                            Handle<Value> argv[]) {
-  Local<Context> context = object->CreationContext();
+  HandleScope handle_scope(node_isolate);  // FIXME(bnoordhuis) Isolate-ify.
+  Local<Context> context = recv->CreationContext();
   Environment* env = Environment::GetCurrent(context);
   Context::Scope context_scope(context);
-  HandleScope handle_scope(env->isolate());
-  return handle_scope.Close(MakeCallback(env, object, symbol, argc, argv));
+  return handle_scope.Close(MakeCallback(env, recv, symbol, argc, argv));
 }
 
 
-Handle<Value> MakeCallback(const Handle<Object> object,
-                           const Handle<Function> callback,
+Handle<Value> MakeCallback(Handle<Object> recv,
+                           Handle<Function> callback,
                            int argc,
                            Handle<Value> argv[]) {
-  Local<Context> context = object->CreationContext();
+  HandleScope handle_scope(node_isolate);  // FIXME(bnoordhuis) Isolate-ify.
+  Local<Context> context = recv->CreationContext();
   Environment* env = Environment::GetCurrent(context);
   Context::Scope context_scope(context);
-  HandleScope handle_scope(env->isolate());
-  return handle_scope.Close(MakeCallback(env, object, callback, argc, argv));
+  return handle_scope.Close(
+      MakeCallback(env, recv.As<Value>(), callback, argc, argv));
 }
 
 
-Handle<Value> MakeDomainCallback(const Handle<Object> object,
-                                 const Handle<Function> callback,
+Handle<Value> MakeDomainCallback(Handle<Object> recv,
+                                 Handle<Function> callback,
                                  int argc,
                                  Handle<Value> argv[]) {
-  Local<Context> context = object->CreationContext();
+  Local<Context> context = recv->CreationContext();
   Environment* env = Environment::GetCurrent(context);
   Context::Scope context_scope(context);
   HandleScope handle_scope(env->isolate());
   return handle_scope.Close(
-      MakeDomainCallback(env, object, callback, argc, argv));
+      MakeDomainCallback(env, recv, callback, argc, argv));
 }
 
 
@@ -1268,80 +1275,120 @@ ssize_t DecodeWrite(char *buf,
   return StringBytes::Write(buf, buflen, val, encoding, NULL);
 }
 
-void DisplayExceptionLine(Handle<Message> message) {
-  // Prevent re-entry into this function.  For example, if there is
-  // a throw from a program in vm.runInThisContext(code, filename, true),
-  // then we want to show the original failure, not the secondary one.
-  static bool displayed_error = false;
-
-  if (displayed_error)
+void AppendExceptionLine(Environment* env,
+                         Handle<Value> er,
+                         Handle<Message> message) {
+  if (message.IsEmpty())
     return;
-  displayed_error = true;
 
-  uv_tty_reset_mode();
+  HandleScope scope(env->isolate());
+  Local<Object> err_obj;
+  if (!er.IsEmpty() && er->IsObject()) {
+    err_obj = er.As<Object>();
 
-  fprintf(stderr, "\n");
-
-  if (!message.IsEmpty()) {
-    // Print (filename):(line number): (message).
-    String::Utf8Value filename(message->GetScriptResourceName());
-    const char* filename_string = *filename;
-    int linenum = message->GetLineNumber();
-    fprintf(stderr, "%s:%i\n", filename_string, linenum);
-    // Print line of source code.
-    String::Utf8Value sourceline(message->GetSourceLine());
-    const char* sourceline_string = *sourceline;
-
-    // Because of how node modules work, all scripts are wrapped with a
-    // "function (module, exports, __filename, ...) {"
-    // to provide script local variables.
-    //
-    // When reporting errors on the first line of a script, this wrapper
-    // function is leaked to the user. There used to be a hack here to
-    // truncate off the first 62 characters, but it caused numerous other
-    // problems when vm.runIn*Context() methods were used for non-module
-    // code.
-    //
-    // If we ever decide to re-instate such a hack, the following steps
-    // must be taken:
-    //
-    // 1. Pass a flag around to say "this code was wrapped"
-    // 2. Update the stack frame output so that it is also correct.
-    //
-    // It would probably be simpler to add a line rather than add some
-    // number of characters to the first line, since V8 truncates the
-    // sourceline to 78 characters, and we end up not providing very much
-    // useful debugging info to the user if we remove 62 characters.
-
-    int start = message->GetStartColumn();
-    int end = message->GetEndColumn();
-
-    fprintf(stderr, "%s\n", sourceline_string);
-    // Print wavy underline (GetUnderline is deprecated).
-    for (int i = 0; i < start; i++) {
-      fputc((sourceline_string[i] == '\t') ? '\t' : ' ', stderr);
-    }
-    for (int i = start; i < end; i++) {
-      fputc('^', stderr);
-    }
-    fputc('\n', stderr);
+    // Do it only once per message
+    if (!err_obj->GetHiddenValue(env->processed_string()).IsEmpty())
+      return;
+    err_obj->SetHiddenValue(env->processed_string(), True(env->isolate()));
   }
+
+  static char arrow[1024];
+
+  // Print (filename):(line number): (message).
+  String::Utf8Value filename(message->GetScriptResourceName());
+  const char* filename_string = *filename;
+  int linenum = message->GetLineNumber();
+  // Print line of source code.
+  String::Utf8Value sourceline(message->GetSourceLine());
+  const char* sourceline_string = *sourceline;
+
+  // Because of how node modules work, all scripts are wrapped with a
+  // "function (module, exports, __filename, ...) {"
+  // to provide script local variables.
+  //
+  // When reporting errors on the first line of a script, this wrapper
+  // function is leaked to the user. There used to be a hack here to
+  // truncate off the first 62 characters, but it caused numerous other
+  // problems when vm.runIn*Context() methods were used for non-module
+  // code.
+  //
+  // If we ever decide to re-instate such a hack, the following steps
+  // must be taken:
+  //
+  // 1. Pass a flag around to say "this code was wrapped"
+  // 2. Update the stack frame output so that it is also correct.
+  //
+  // It would probably be simpler to add a line rather than add some
+  // number of characters to the first line, since V8 truncates the
+  // sourceline to 78 characters, and we end up not providing very much
+  // useful debugging info to the user if we remove 62 characters.
+
+  int start = message->GetStartColumn();
+  int end = message->GetEndColumn();
+
+  int off = snprintf(arrow,
+                     sizeof(arrow),
+                     "%s:%i\n%s\n",
+                     filename_string,
+                     linenum,
+                     sourceline_string);
+  assert(off >= 0);
+
+  // Print wavy underline (GetUnderline is deprecated).
+  for (int i = 0; i < start; i++) {
+    assert(static_cast<size_t>(off) < sizeof(arrow));
+    arrow[off++] = (sourceline_string[i] == '\t') ? '\t' : ' ';
+  }
+  for (int i = start; i < end; i++) {
+    assert(static_cast<size_t>(off) < sizeof(arrow));
+    arrow[off++] = '^';
+  }
+  assert(static_cast<size_t>(off) < sizeof(arrow) - 1);
+  arrow[off++] = '\n';
+  arrow[off] = '\0';
+
+  Local<String> arrow_str = String::NewFromUtf8(env->isolate(), arrow);
+  Local<Value> msg;
+  Local<Value> stack;
+
+  // Allocation failed, just print it out
+  if (arrow_str.IsEmpty() || err_obj.IsEmpty() || !err_obj->IsNativeError())
+    goto print;
+
+  msg = err_obj->Get(env->message_string());
+  stack = err_obj->Get(env->stack_string());
+
+  if (msg.IsEmpty() || stack.IsEmpty())
+    goto print;
+
+  err_obj->Set(env->message_string(),
+               String::Concat(arrow_str, msg->ToString()));
+  err_obj->Set(env->stack_string(),
+               String::Concat(arrow_str, stack->ToString()));
+  return;
+
+ print:
+  if (env->printed_error())
+    return;
+  env->set_printed_error(true);
+  uv_tty_reset_mode();
+  fprintf(stderr, "\n%s", arrow);
 }
 
 
-static void ReportException(Handle<Value> er, Handle<Message> message) {
-  HandleScope scope(node_isolate);
+static void ReportException(Environment* env,
+                            Handle<Value> er,
+                            Handle<Message> message) {
+  HandleScope scope(env->isolate());
 
-  DisplayExceptionLine(message);
+  AppendExceptionLine(env, er, message);
 
   Local<Value> trace_value;
 
-  if (er->IsUndefined() || er->IsNull()) {
-    trace_value = Undefined(node_isolate);
-  } else {
-    trace_value =
-        er->ToObject()->Get(FIXED_ONE_BYTE_STRING(node_isolate, "stack"));
-  }
+  if (er->IsUndefined() || er->IsNull())
+    trace_value = Undefined(env->isolate());
+  else
+    trace_value = er->ToObject()->Get(env->stack_string());
 
   String::Utf8Value trace(trace_value);
 
@@ -1357,8 +1404,8 @@ static void ReportException(Handle<Value> er, Handle<Message> message) {
 
     if (er->IsObject()) {
       Local<Object> err_obj = er.As<Object>();
-      message = err_obj->Get(FIXED_ONE_BYTE_STRING(node_isolate, "message"));
-      name = err_obj->Get(FIXED_ONE_BYTE_STRING(node_isolate, "name"));
+      message = err_obj->Get(env->message_string());
+      name = err_obj->Get(FIXED_ONE_BYTE_STRING(env->isolate(), "name"));
     }
 
     if (message.IsEmpty() ||
@@ -1379,14 +1426,16 @@ static void ReportException(Handle<Value> er, Handle<Message> message) {
 }
 
 
-static void ReportException(const TryCatch& try_catch) {
-  ReportException(try_catch.Exception(), try_catch.Message());
+static void ReportException(Environment* env, const TryCatch& try_catch) {
+  ReportException(env, try_catch.Exception(), try_catch.Message());
 }
 
 
 // Executes a str within the current v8 context.
-Local<Value> ExecuteString(Handle<String> source, Handle<Value> filename) {
-  HandleScope scope(node_isolate);
+static Local<Value> ExecuteString(Environment* env,
+                                  Handle<String> source,
+                                  Handle<Value> filename) {
+  HandleScope scope(env->isolate());
   TryCatch try_catch;
 
   // try_catch must be nonverbose to disable FatalException() handler,
@@ -1395,13 +1444,13 @@ Local<Value> ExecuteString(Handle<String> source, Handle<Value> filename) {
 
   Local<v8::Script> script = v8::Script::Compile(source, filename);
   if (script.IsEmpty()) {
-    ReportException(try_catch);
+    ReportException(env, try_catch);
     exit(3);
   }
 
   Local<Value> result = script->Run();
   if (result.IsEmpty()) {
-    ReportException(try_catch);
+    ReportException(env, try_catch);
     exit(4);
   }
 
@@ -2018,7 +2067,7 @@ void FatalException(Handle<Value> error, Handle<Message> message) {
   if (!fatal_exception_function->IsFunction()) {
     // failed before the process._fatalException function was added!
     // this is probably pretty bad.  Nothing to do but report and exit.
-    ReportException(error, message);
+    ReportException(env, error, message);
     exit(6);
   }
 
@@ -2033,12 +2082,12 @@ void FatalException(Handle<Value> error, Handle<Message> message) {
 
   if (fatal_try_catch.HasCaught()) {
     // the fatal exception function threw, so we must exit
-    ReportException(fatal_try_catch);
+    ReportException(env, fatal_try_catch);
     exit(7);
   }
 
   if (false == caught->BooleanValue()) {
-    ReportException(error, message);
+    ReportException(env, error, message);
     exit(1);
   }
 }
@@ -2698,10 +2747,10 @@ void Load(Environment* env) {
   // are not safe to ignore.
   try_catch.SetVerbose(false);
 
-  Local<String> script_name = FIXED_ONE_BYTE_STRING(node_isolate, "node.js");
-  Local<Value> f_value = ExecuteString(MainSource(), script_name);
+  Local<String> script_name = FIXED_ONE_BYTE_STRING(env->isolate(), "node.js");
+  Local<Value> f_value = ExecuteString(env, MainSource(), script_name);
   if (try_catch.HasCaught())  {
-    ReportException(try_catch);
+    ReportException(env, try_catch);
     exit(10);
   }
   assert(f_value->IsFunction());
@@ -3336,7 +3385,9 @@ int EmitExit(Environment* env) {
   };
 
   MakeCallback(env, process_object, "emit", ARRAY_SIZE(args), args);
-  return code;
+
+  // Reload exit code, it may be changed by `emit('exit')`
+  return process_object->Get(exitCode)->IntegerValue();
 }
 
 

@@ -68,7 +68,9 @@ TLSCallbacks::TLSCallbacks(Environment* env,
                            StreamWrapCallbacks* old)
     : SSLWrap<TLSCallbacks>(env, Unwrap<SecureContext>(sc), kind),
       StreamWrapCallbacks(old),
-      AsyncWrap(env, env->tls_wrap_constructor_function()->NewInstance()),
+      AsyncWrap(env,
+                env->tls_wrap_constructor_function()->NewInstance(),
+                AsyncWrap::PROVIDER_TLSWRAP),
       sc_(Unwrap<SecureContext>(sc)),
       sc_handle_(env->isolate(), sc),
       enc_in_(NULL),
@@ -79,6 +81,7 @@ TLSCallbacks::TLSCallbacks(Environment* env,
       established_(false),
       shutdown_(false),
       error_(NULL),
+      cycle_depth_(0),
       eof_(false) {
   node::Wrap<TLSCallbacks>(object(), this);
 
@@ -153,6 +156,11 @@ bool TLSCallbacks::InvokeQueued(int status) {
   }
 
   return true;
+}
+
+
+void TLSCallbacks::NewSessionDoneCb() {
+  Cycle();
 }
 
 
@@ -305,6 +313,10 @@ void TLSCallbacks::EncOut() {
 
   // Write in progress
   if (write_size_ != 0)
+    return;
+
+  // Wait for `newSession` callback to be invoked
+  if (is_waiting_new_session())
     return;
 
   // Split-off queue
@@ -747,29 +759,37 @@ void TLSCallbacks::SetServername(const FunctionCallbackInfo<Value>& args) {
 
 
 int TLSCallbacks::SelectSNIContextCallback(SSL* s, int* ad, void* arg) {
-  HandleScope scope(node_isolate);
-
   TLSCallbacks* p = static_cast<TLSCallbacks*>(arg);
   Environment* env = p->env();
 
   const char* servername = SSL_get_servername(s, TLSEXT_NAMETYPE_host_name);
 
-  if (servername != NULL) {
-    // Call the SNI callback and use its return value as context
-    Local<Object> object = p->object();
-    Local<Value> ctx = object->Get(env->sni_context_string());
+  if (servername == NULL)
+    return SSL_TLSEXT_ERR_OK;
 
-    if (!ctx->IsObject())
-      return SSL_TLSEXT_ERR_NOACK;
+  HandleScope scope(env->isolate());
+  // Call the SNI callback and use its return value as context
+  Local<Object> object = p->object();
+  Local<Value> ctx = object->Get(env->sni_context_string());
 
-    p->sni_context_.Dispose();
-    p->sni_context_.Reset(node_isolate, ctx);
+  // Not an object, probably undefined or null
+  if (!ctx->IsObject())
+    return SSL_TLSEXT_ERR_NOACK;
 
-    SecureContext* sc = Unwrap<SecureContext>(ctx.As<Object>());
-    InitNPN(sc, p);
-    SSL_set_SSL_CTX(s, sc->ctx_);
+  Local<FunctionTemplate> cons = env->secure_context_constructor_template();
+  if (!cons->HasInstance(ctx)) {
+    // Failure: incorrect SNI context object
+    Local<Value> err = Exception::TypeError(env->sni_context_err_string());
+    p->MakeCallback(env->onerror_string(), 1, &err);
+    return SSL_TLSEXT_ERR_NOACK;
   }
 
+  p->sni_context_.Dispose();
+  p->sni_context_.Reset(node_isolate, ctx);
+
+  SecureContext* sc = Unwrap<SecureContext>(ctx.As<Object>());
+  InitNPN(sc, p);
+  SSL_set_SSL_CTX(s, sc->ctx_);
   return SSL_TLSEXT_ERR_OK;
 }
 #endif  // SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
